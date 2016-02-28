@@ -88,14 +88,29 @@ int IORedirection(char** argv){
 		if(!pid){
 			if(file_out && found == 1){
 				//0_TRUNC sets the length to zero, which means it will clear the file after opening.
-				dup2(open(file_out, O_WRONLY | O_TRUNC | O_CREAT, S_IRUSR | S_IRGRP | S_IWGRP | S_IWUSR),1);
+				int file_o = open(file_out, O_WRONLY | O_TRUNC | O_CREAT, S_IRUSR | S_IRGRP | S_IWGRP | S_IWUSR);
+				if(file_o < 0){
+					perror("file_out error");
+					_exit(EXIT_FAILURE);
+				} 
+				dup2(file_o,1);
 			}
 			else if(file_out && found == 2){
 				//0_APPEND doesn't set length to zero, which means it will let user append from the last save.
-				dup2(open(file_out, O_WRONLY | O_APPEND | O_CREAT, S_IRUSR | S_IRGRP | S_IWGRP | S_IWUSR),1);
+				int file_o = open(file_out, O_WRONLY | O_APPEND | O_CREAT, S_IRUSR | S_IRGRP | S_IWGRP | S_IWUSR);
+				if(file_o < 0){
+					perror("file_out error");
+					_exit(EXIT_FAILURE);
+				}
+				dup2(file_o,1);
 			}
 			if(file_in){
-				dup2(open(file_in, O_RDONLY),0);
+				int file_i = open(file_in, O_RDONLY);
+				if(file_i < 0){
+					perror("file_in error");
+					_exit(EXIT_FAILURE);
+				}
+				dup2(file_i,0);
 			}
 			if(execvp(argv[0],argv) == -1){
 				perror("COMMAND NOT FOUND");
@@ -116,11 +131,121 @@ int IORedirection(char** argv){
 	return found;
 }
 
+void execute_pipe(char **argv1, char **argv2){
+	int fd[2],wpid,status;
+	if(pipe(fd)){
+		perror("piped failed");
+		_exit(EXIT_FAILURE);
+	}
+	pid_t pid = fork();
+	if(!pid){
+		dup2(fd[1],1);
+		close(fd[0]);
+		execvp(argv1[0],argv1);
+	}
+	else if(pid < 0){
+		perror("fork failed");
+	}
+	else{
+		do{
+			wpid = waitpid(pid,&status,WUNTRACED);
+		}while(!WIFEXITED(status) && !WIFSIGNALED(status));
+		dup2(fd[0],0);
+		close(fd[1]);
+		execvp(argv2[0],argv2);
+	}
+}
+
+int tauSH_pipe(char** argv){
+	int found = 0, wpid,status;
+	int fileDesc[2];
+	//printf("over here");
+	char **argv2 = (char**)malloc(MAXLEN * sizeof(char*));
+	int i;
+	for(i = 0 ; i < MAXLEN ; i++){
+		if(argv[i] == NULL) break;
+		if(!strcmp(argv[i],"|")){
+			found = 1;
+			argv[i] = NULL;
+			int j,k;
+			for(j = i + 1,k = 0; j < MAXLEN ; j++){
+				argv2[k++] = argv[j];
+			}
+			break;
+		}
+	}
+	if(found){
+		pid_t pid = fork();
+		if(!pid){
+			execute_pipe(argv,argv2);
+		}
+		else if(pid < 0){
+			perror("fork failed");
+			_exit(EXIT_FAILURE);
+		}
+		else{
+			do{
+				wpid = waitpid(pid,&status,WUNTRACED);
+			}while(!WIFEXITED(status) && !WIFSIGNALED(status));
+		}
+	}
+	
+	return found;
+}
+void runBGProcess(char** argv){
+	pid_t pid , wpid;
+	int status;
+	pid = fork();
+	if(!pid){
+		execvp(argv[0],argv);
+	}
+	else if(pid < 0){
+		perror("fork failed");
+		_exit(EXIT_FAILURE);
+	}
+	
+}
+int backGroundProcess(char** argv){
+	int i ;
+	int found = 0;
+	for(i = 0 ; i < MAXLEN; i++){
+		if(argv[i] == NULL) break;
+		if(!strcmp(argv[i],"&")){
+			found = 0;
+			argv[i] = NULL;
+			break;
+		}
+	}
+	if(found){
+		/*pid_t pid = fork();
+		if(!pid){
+			runBGProcess(argv);
+		}
+		else if(pid < 0){
+			perror("fork failed");
+			_exit(EXIT_FAILURE);
+		}
+		else{
+			return found;
+		}*/
+		runBGProcess(argv);
+	}
+	return found;
+}
+
 int tauSH_execute(char** argv){
 	//here the built-ins will be written because they can't be done by using child process.
 	if(IORedirection(argv)){
 		return 1;
 	}
+	if(tauSH_pipe(argv)){
+		return 1;
+	}
+	
+	if(backGroundProcess(argv)){
+		return 1;
+	}
+	
 	//chdir changes the DIRECTORY, that is pretty convinient. 
 	if(!strcmp(argv[0],"cd")){
 		if(argv[1] == NULL){
@@ -136,7 +261,10 @@ int tauSH_execute(char** argv){
 	}
 	else if(!strcmp(argv[0],"help")){
 		printf("WELCOME TO MY VERY OWN SHELL\nIt is very much like the normal bash.\n");
+		printf("IO redirection and one level pipe can be done.\n");
 		printf("Normal commands are added.\nBuilt-in commands such as cd, echo, help, exit are implemented.\n");
+		printf("IO redirection and pipe doesn't work in same command. Please use without caution.\n");
+		printf("Background Process doesn't work.\n");
 		printf("Press either CTRL+C or write \"$exit\" to escape the program.\n");
 		return 1;
 	}
