@@ -4,6 +4,9 @@
 #include <unistd.h>
 #include <sys/types.h>
 #include <sys/wait.h>
+#include <fcntl.h>
+#include <sys/stat.h>
+
 
 //macros
 #define MAXLEN 1024
@@ -18,15 +21,16 @@ char **SplitString(char str[]){
 	}
 	int numberOfArguments = 0;		
 	int length = strlen(str);		//length of input str to run the loop
-	char skippingChars[] = " \t\n";	//breaking characters.
+	char skippingChars[] = " \t\n\"";	//breaking characters.
 	char *temp ;	//temporary variable to store string.
 	
 	//strtok finds the token where it finds the skippingChars's any character and returns a pointer to it 
 	temp = strtok(str,skippingChars);
 	while(temp){
 		argv[numberOfArguments++] = temp;
-		temp = strtok(NULL, " \t\n");
+		temp = strtok(NULL, skippingChars);
 	}
+	argv[numberOfArguments] = NULL;
 	return argv;
 }
 
@@ -38,7 +42,7 @@ int tauSH_run(char** argv){
 		if(execvp(argv[0],argv) == -1){
 			perror("COMMAND NOT FOUND");
 		}
-		exit(EXIT_FAILURE);
+		_exit(EXIT_FAILURE);
 	}
 	else if(pid < 0){
 		perror("FORK FAILED");
@@ -52,17 +56,115 @@ int tauSH_run(char** argv){
 	}
 	return 1;
 }
+// > is to file, < is input from file
+
+int IORedirection(char** argv){
+	int found = 0;
+	char* file_in = NULL;
+	char* file_out = NULL;
+	int i;
+	for(i = 0 ; i < MAXLEN ; i++){
+		if(argv[i] == NULL) break;
+		if(!strcmp(argv[i],">")){
+			found = 1;
+			argv[i] = NULL;
+			file_out = argv[i+1];
+		}
+		else if(!strcmp(argv[i],"<")){
+			found = 1;
+			argv[i] = NULL;
+			file_in = argv[i+1];
+		}
+		else if(!strcmp(argv[i],">>")){
+			found = 2;
+			argv[i] = NULL;
+			file_out = argv[i+1];
+		}
+	}
+	if(found){
+		pid_t pid, wpid;
+		int status;
+		pid = fork();
+		if(!pid){
+			if(file_out && found == 1){
+				//0_TRUNC sets the length to zero, which means it will clear the file after opening.
+				dup2(open(file_out, O_WRONLY | O_TRUNC | O_CREAT, S_IRUSR | S_IRGRP | S_IWGRP | S_IWUSR),1);
+			}
+			else if(file_out && found == 2){
+				//0_APPEND doesn't set length to zero, which means it will let user append from the last save.
+				dup2(open(file_out, O_WRONLY | O_APPEND | O_CREAT, S_IRUSR | S_IRGRP | S_IWGRP | S_IWUSR),1);
+			}
+			if(file_in){
+				dup2(open(file_in, O_RDONLY),0);
+			}
+			if(execvp(argv[0],argv) == -1){
+				perror("COMMAND NOT FOUND");
+			}
+			exit(EXIT_FAILURE);
+		}
+		else if(pid < 0){
+			perror("FORK FAILED");
+		}
+		else{
+			do{
+				wpid = waitpid(pid,&status,WUNTRACED);
+			}while(!WIFEXITED(status) && !WIFSIGNALED(status));
+			//WIFEXITED = true if child exited normally.
+			//WIFSIGNALED = true if child exited due to uncaught signal.
+		}
+	}
+	return found;
+}
+
+int tauSH_execute(char** argv){
+	//here the built-ins will be written because they can't be done by using child process.
+	if(IORedirection(argv)){
+		return 1;
+	}
+	//chdir changes the DIRECTORY, that is pretty convinient. 
+	if(!strcmp(argv[0],"cd")){
+		if(argv[1] == NULL){
+			//i couldn't implement "cd " :( 
+			fprintf(stderr,"PARAMETER NEEDED");
+		}
+		else{
+			if(chdir(argv[1]) != 0){
+				fprintf(stderr,"DIRECTORY NOT FOUND\n");
+			}
+		}
+		return 1;
+	}
+	else if(!strcmp(argv[0],"help")){
+		printf("WELCOME TO MY VERY OWN SHELL\nIt is very much like the normal bash.\n");
+		printf("Normal commands are added.\nBuilt-in commands such as cd, echo, help, exit are implemented.\n");
+		printf("Press either CTRL+C or write \"$exit\" to escape the program.\n");
+		return 1;
+	}
+	//only \t will not work, as it was taken as a breaking character while parsing.
+	else if(!strcmp(argv[0],"echo")){
+		int i;
+		for(i = 1 ; i < MAXLEN; i++){
+			if(!argv[i]) break;
+			printf("%s ",argv[i]);
+		}
+		printf("\n");
+		return 1;
+	}
+	else if(!strcmp(argv[0],"exit")){
+		return 0;
+	}
+	return tauSH_run(argv);
+}
 
 void tauSHLoop(){
 	int status = 0;
 	char line[MAXLEN];
 	char **argv;
-	//int argc;
 	do{
 		printf("> ");
 		gets(line);
 		argv = SplitString(line);
-		status = tauSH_run(argv);
+		status = tauSH_execute(argv);
 	}while(status);
 }
 
